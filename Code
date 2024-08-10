@@ -1,0 +1,226 @@
+//TIMER_DEAKIN.h
+#ifndef TIMER_DEAKIN_H
+#define TIMER_DEAKIN_H
+#include <Arduino.h>
+
+class TIMER_DEAKIN {
+public:
+    // Method to configure the timer
+    //Use usigned integers because of memory and processing efficiency and matching space. Also matches timers which are 16-bit.
+    bool config_timer(uint8_t timeNum, uint16_t start_value, uint16_t end_value, float resolution) {
+        if (timeNum > 2) {
+            return false; // Invalid timer number
+        }
+
+        // Enable the Generic Clock for the selected TC (e.g., TC3, TC4, TC5)
+        GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCLK_CLKCTRL_ID_TCC2_TC3) | 
+                            GCLK_CLKCTRL_GEN_GCLK0 |                     
+                            GCLK_CLKCTRL_CLKEN;                          
+        while (GCLK->STATUS.bit.SYNCBUSY);                               
+
+        // Get the register based on the timer number
+        TcCount16 *TC;
+        if (timeNum == 0) {
+            TC = &(TC3->COUNT16);
+        } else if (timeNum == 1) {
+            TC = &(TC4->COUNT16);
+        } else {
+            TC = &(TC5->COUNT16);
+        }
+
+        // Reset the selected TC module
+        TC->CTRLA.reg = TC_CTRLA_SWRST;
+        while (TC->STATUS.bit.SYNCBUSY);
+
+        // Configure the timer
+        TC->CTRLA.reg = TC_CTRLA_MODE_COUNT16 |    // Set as 16-bit counter
+                        TC_CTRLA_PRESCALER_DIV256 | //Divide clock by 256 
+                        TC_CTRLA_WAVEGEN_MFRQ;    //Set to match frequency mode
+
+        // Count to end value 
+        TC->CC[0].reg = end_value; // Compare value
+        while (TC->STATUS.bit.SYNCBUSY);
+
+        // Enable the timer
+        TC->CTRLA.reg |= TC_CTRLA_ENABLE;
+        while (TC->STATUS.bit.SYNCBUSY);
+
+        return true;
+    }
+
+    // Method to return the value of the counter for TC3, TC4, and TC5
+    uint16_t get_value(uint8_t timeNum) {
+        TcCount16 *TC;
+        if (timeNum == 0) {
+            TC = &(TC3->COUNT16);
+        } else if (timeNum == 1) {
+            TC = &(TC4->COUNT16);
+        } else {
+            TC = &(TC5->COUNT16);
+        }
+        while (TC->STATUS.bit.SYNCBUSY);
+        return TC->COUNT.reg;
+    }
+
+    // Wait function with 0.1 ms resolution
+    void wait(uint16_t period_in_0_1ms) {
+        uint16_t count_value = period_in_0_1ms * (1.0 / 0.1); //calculate count
+
+        // Reset the counter
+        TC3->COUNT16.COUNT.reg = 0;
+        while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+
+        // Count to value
+        TC3->COUNT16.CC[0].reg = count_value;
+        while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+
+        // until the timer reaches the compare value
+        while (!(TC3->COUNT16.INTFLAG.bit.MC0)) {
+        }
+
+        // Clear the interrupt flag
+        TC3->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;
+    }
+};
+
+#endif // TIMER_DEAKIN_H
+
+//GPIO_DEAKIN.h
+#ifndef GPIO_DEAKIN_H
+#define GPIO_DEAKIN_H
+#include "TIMER_DEAKIN.h"
+
+class GPIO_DEAKIN {
+public:
+
+    bool Validation(char PortNum) 
+    {
+      return (PortNum == 'A' || PortNum == 'B'); //Checks if port is valid
+    }
+
+    bool Config_GPIO(char PortNum, uint8_t PinNum, bool Mode) 
+    {
+        if (!Validation(PortNum)) 
+        {
+          return false;
+        }
+
+        PM->APBBMASK.reg |= PM_APBBMASK_PORT; //Enable clock
+
+        if (Mode == true) {
+            PORT->Group[PortNum - 'A'].DIRSET.reg = (1 << PinNum); //Bitwise shift to PinNum to be output
+        } else {
+            PORT->Group[PortNum - 'A'].DIRCLR.reg = (1 << PinNum); //Bitwise shift to clear bits to be input 
+        }
+
+        return true;
+    }
+
+    bool Write_GPIO(char PortNum, uint8_t PinNum, bool State) 
+    {
+        if (!Validation(PortNum)) 
+        {
+          return false;
+        }
+
+        if (State == true) {
+            PORT->Group[PortNum - 'A'].OUTSET.reg = (1 << PinNum); //Performs bitwise shift to set to high 
+        } else {
+            PORT->Group[PortNum - 'A'].OUTCLR.reg = (1 << PinNum); //Performs bitwise shift to set to low 
+        }
+
+        return true;
+    }
+
+    bool Read_GPIO(char PortNum, uint8_t PinNum) 
+    {
+        if (!Validation(PortNum)) 
+        {
+          return false;
+        }
+        return (PORT->Group[PortNum - 'A'].IN.reg & (1 << PinNum)) != 0; //returns state of pin
+    }
+
+    bool Config_Multi_GPIO(char PinArray[], bool Mode) {
+    for (int i = 0; i < 6; i++) { //Loop through each pin
+        if (!Config_GPIO('A', PinArray[i], Mode)) {  //Use Config_GPIO method to configure 6 pins
+            return false; //Return false if fails
+        }
+    }
+    return true;
+  }
+
+    bool GPIO_Display_Pattern(char PinArray[], char Pattern) {
+    for (int i = 0; i < 6; i++) { //Loop thorugh each pin
+        bool state = (Pattern & (1 << i)) != 0; //Assigns state on pins 
+        if (!Write_GPIO('A', PinArray[i], state)) { //Write state to pin 
+            return false;
+        }
+    }
+    return true;
+  }
+
+  void Running_Lights(char PinArray[], uint16_t duration, TIMER_DEAKIN& timer) {
+    while (true) {
+        // Forwards
+        for (int i = 0; i < 6; i++) { //Loop thorugh pins 
+            Write_GPIO('A', PinArray[i], HIGH); //Set to high 
+            timer.wait(duration); //Wait duration
+            Write_GPIO('A', PinArray[i], LOW); //Set to low 
+        }
+
+        // Backwards
+        for (int i = 5; i >= 0; i--) { //Loop backwards 
+            Write_GPIO('A', PinArray[i], HIGH); 
+            timer.wait(duration);
+            Write_GPIO('A', PinArray[i], LOW);
+        }
+      }
+    }
+
+};
+
+#endif 
+
+//GPIO_DEAKIN.ino
+#include "GPIO_DEAKIN.h"
+#include "TIMER_DEAKIN.h"
+
+GPIO_DEAKIN gpio;
+TIMER_DEAKIN timer;
+char pins[6] = {5, 4, 6, 18, 20, 21}; 
+
+void setup() {
+    //Configure PA21 as output
+    //gpio.Config_GPIO('A', 21, OUTPUT);
+    gpio.Config_Multi_GPIO(pins, OUTPUT);
+    timer.config_timer(0, 0, 5000, 0.1);
+}
+
+void loop() {
+    //Set PA21 HIGH
+    // gpio.Write_GPIO('A', 21, HIGH);
+    // Serial.println(gpio.Read_GPIO('A', 21));
+    // timer.wait(1000);
+
+    //Set PA21 LOW
+    // gpio.Write_GPIO('A', 21, LOW);
+    // Serial.println(gpio.Read_GPIO('A', 21));
+    // timer.wait(1000); // Wait for 1 second
+
+    //gpio.GPIO_Display_Pattern(pins, pattern);
+
+    gpio.GPIO_Display_Pattern(pins, 0b111010); //Pattern 0 1 0 1 1 1
+
+    timer.wait(7000); //Delay 700 ms
+
+    gpio.GPIO_Display_Pattern(pins, 0b000101); //Pattern 1 0 1 0 0 0 
+
+    timer.wait(7000);
+
+    gpio.GPIO_Display_Pattern(pins, 0b101010); //Pattern 0 1 0 1 0 1
+    
+    timer.wait(7000);
+
+    gpio.Running_Lights(pins, 3000, timer); //Running lights at 300 ms
+}
